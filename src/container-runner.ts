@@ -42,6 +42,17 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  modelProvider?: {
+    baseUrl?: string;
+    apiKey?: string;
+    model?: string;
+  };
+  runtime?: 'claude' | 'opencode';
+  opencodeConfig?: {
+    provider?: string;
+    apiKey?: string;
+    model?: string;
+  };
 }
 
 export interface ContainerOutput {
@@ -183,8 +194,19 @@ function buildVolumeMounts(
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
  */
-function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+function readSecrets(group?: RegisteredGroup): Record<string, string> {
+  const keys = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+  // If group has a custom provider API key, read that too
+  const customApiKey = group?.containerConfig?.modelProvider?.apiKey;
+  if (customApiKey && !keys.includes(customApiKey)) {
+    keys.push(customApiKey);
+  }
+  // If group uses OpenCode runtime with a custom API key, read that too
+  const opencodeApiKey = group?.containerConfig?.opencodeConfig?.apiKey;
+  if (opencodeApiKey && !keys.includes(opencodeApiKey)) {
+    keys.push(opencodeApiKey);
+  }
+  return readEnvFile(keys);
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
@@ -255,11 +277,18 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
+    input.secrets = readSecrets(group);
+    // Pass model provider config so agent-runner can inject env overrides
+    input.modelProvider = group.containerConfig?.modelProvider;
+    // Pass runtime selection and OpenCode config
+    input.runtime = group.containerConfig?.runtime;
+    input.opencodeConfig = group.containerConfig?.opencodeConfig;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-    // Remove secrets from input so they don't appear in logs
+    // Remove secrets and provider config from input so they don't appear in logs
     delete input.secrets;
+    delete input.modelProvider;
+    delete input.opencodeConfig;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
