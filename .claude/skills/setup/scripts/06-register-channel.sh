@@ -71,8 +71,13 @@ if [ "$ASSISTANT_NAME" != "Andy" ]; then
 
   for md_file in groups/global/CLAUDE.md groups/main/CLAUDE.md; do
     if [ -f "$PROJECT_ROOT/$md_file" ]; then
-      sed -i '' "s/^# Andy$/# $ASSISTANT_NAME/" "$PROJECT_ROOT/$md_file"
-      sed -i '' "s/You are Andy/You are $ASSISTANT_NAME/g" "$PROJECT_ROOT/$md_file"
+      if [[ "$(uname)" == "Darwin" ]]; then
+        sed -i '' "s/^# Andy$/# $ASSISTANT_NAME/" "$PROJECT_ROOT/$md_file"
+        sed -i '' "s/You are Andy/You are $ASSISTANT_NAME/g" "$PROJECT_ROOT/$md_file"
+      else
+        sed -i "s/^# Andy$/# $ASSISTANT_NAME/" "$PROJECT_ROOT/$md_file"
+        sed -i "s/You are Andy/You are $ASSISTANT_NAME/g" "$PROJECT_ROOT/$md_file"
+      fi
       log "Updated $md_file"
     else
       log "WARNING: $md_file not found, skipping name update"
