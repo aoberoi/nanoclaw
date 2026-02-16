@@ -41,22 +41,20 @@ Only ask the user for help if multiple retries fail with the same error.
 
 ## 3. Container Runtime
 
-Use the environment check results from step 1 to decide which runtime to use:
+Docker is the container runtime. Check if it's available:
 
-- PLATFORM=linux → Docker will be used. If the source code still references Apple Container (check for `container system status` in `src/index.ts`), run the `/convert-to-docker` skill first, then continue.
-- PLATFORM=macos + APPLE_CONTAINER=installed → use apple-container
-- PLATFORM=macos + DOCKER=running + APPLE_CONTAINER=not_found → use Docker. If the source code still references Apple Container, run the `/convert-to-docker` skill first.
-- PLATFORM=macos + DOCKER=installed_not_running → start Docker for them: `open -a Docker`. Wait 15s, re-check with `docker info`. If still not running, tell the user Docker is starting up and poll a few more times. Then apply `/convert-to-docker` if source code needs it.
-- Neither available → AskUserQuestion: Apple Container (recommended for macOS) vs Docker?
-  - **If Docker chosen:** install it, then run the `/convert-to-docker` skill to update the source code.
-  - Apple Container: tell user to download from https://github.com/apple/container/releases and install the .pkg. Wait for confirmation, then verify with `container --version`.
-  - Docker on macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download.
-  - Docker on Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
+- DOCKER=running → proceed
+- DOCKER=installed_not_running:
+  - Linux: `sudo systemctl start docker`
+  - macOS: `open -a Docker`, wait 15s, re-check with `docker info`
+- DOCKER not found → install it:
+  - Linux: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
+  - macOS: `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download.
 
-Run `./.claude/skills/setup/scripts/03-setup-container.sh --runtime <chosen>` and parse the status block.
+Run `./.claude/skills/setup/scripts/03-setup-container.sh --runtime docker` and parse the status block.
 
 **If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
-- If it's a cache issue (stale layers): run `container builder stop && container builder rm && container builder start` (Apple Container) or `docker builder prune -f` (Docker), then retry.
+- If it's a cache issue (stale layers): run `docker builder prune -f`, then retry.
 - If Dockerfile syntax or missing files: diagnose from the log and fix.
 - Retry the build script after fixing.
 
@@ -187,7 +185,7 @@ Show the log tail command: `tail -f logs/nanoclaw.log`
 
 **Service not starting:** Check `logs/nanoclaw.error.log`. Common causes: wrong Node path in plist (re-run step 10), missing `.env` (re-run step 4), missing WhatsApp auth (re-run step 5).
 
-**Container agent fails ("Claude Code process exited with code 1"):** Ensure the container runtime is running — start it: `container system start` (Apple Container) or `open -a Docker` (macOS Docker). Check container logs in `groups/main/logs/container-*.log`.
+**Container agent fails ("Claude Code process exited with code 1"):** Ensure Docker is running — `sudo systemctl start docker` (Linux) or `open -a Docker` (macOS). Check container logs in `groups/main/logs/container-*.log`.
 
 **No response to messages:** Verify the trigger pattern matches. Main channel and personal/solo chats don't need a prefix. Check the registered JID in the database: `sqlite3 store/messages.db "SELECT * FROM registered_groups"`. Check `logs/nanoclaw.log`.
 

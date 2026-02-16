@@ -6,7 +6,7 @@ Original requirements and design decisions from the project creator.
 
 ## Why This Exists
 
-This is a lightweight, secure alternative to OpenClaw (formerly ClawBot). That project became a monstrosity - 4-5 different processes running different gateways, endless configuration files, endless integrations. It's a security nightmare where agents don't run in isolated processes; there's all kinds of leaky workarounds trying to prevent them from accessing parts of the system they shouldn't. It's impossible for anyone to realistically understand the whole codebase. When you run it you're kind of just yoloing it.
+This is a lightweight, secure alternative to OpenClaw (formerly ClawdBot). That project became a monstrosity - 4-5 different processes running different gateways, endless configuration files, endless integrations. It's a security nightmare where agents don't run in isolated processes; there's all kinds of leaky workarounds trying to prevent them from accessing parts of the system they shouldn't. It's impossible for anyone to realistically understand the whole codebase. When you run it you're kind of just yoloing it.
 
 NanoClaw gives you the core functionality without that mess.
 
@@ -20,7 +20,7 @@ The entire codebase should be something you can read and understand. One Node.js
 
 ### Security Through True Isolation
 
-Instead of application-level permission systems trying to prevent agents from accessing things, agents run in actual Linux containers (Apple Container). The isolation is at the OS level. Agents can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your Mac.
+Instead of application-level permission systems trying to prevent agents from accessing things, agents run in actual Docker containers. The isolation is at the OS level. Agents can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
 
 ### Built for One User
 
@@ -54,13 +54,7 @@ Skills to add or switch to different messaging platforms:
 - `/add-sms` - Add SMS via Twilio or similar
 - `/convert-to-telegram` - Replace WhatsApp with Telegram entirely
 
-### Container Runtime
-The project currently uses Apple Container (macOS-only). We need:
-- `/convert-to-docker` - Replace Apple Container with standard Docker
-- This unlocks Linux support and broader deployment options
-
 ### Platform Support
-- `/setup-linux` - Make the full setup work on Linux (depends on Docker conversion)
 - `/setup-windows` - Windows support via WSL2 + Docker
 
 ---
@@ -71,7 +65,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 
 **Core components:**
 - **Claude Agent SDK** as the core agent
-- **Apple Container** for isolated agent execution (Linux VMs)
+- **Docker** for isolated agent execution (containers)
 - **WhatsApp** as the primary I/O channel
 - **Persistent memory** per conversation and globally
 - **Scheduled tasks** that run Claude and can message back
@@ -104,7 +98,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - Sessions auto-compact when context gets too long, preserving critical information
 
 ### Container Isolation
-- All agents run inside Apple Container (lightweight Linux VMs)
+- All agents run inside Docker containers
 - Each agent invocation spawns a container with mounted directories
 - Containers provide filesystem isolation - agents can only see mounted paths
 - Bash access is safe because commands run inside the container, not on the host
@@ -175,7 +169,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - `/customize` - General-purpose skill for adding capabilities (new channels like Telegram, new integrations, behavior changes)
 
 ### Deployment
-- Runs on local Mac via launchd
+- Runs via systemd (Linux) or launchd (macOS)
 - Single Node.js process handles everything
 
 ---
