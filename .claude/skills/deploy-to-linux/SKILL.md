@@ -188,17 +188,75 @@ Verify: `ssh nanoclaw 'echo "OK"'`
 
 **If no:** Use `nanoclaw@IP_ADDRESS` and `root@IP_ADDRESS` in all subsequent commands instead of the aliases.
 
-## 7. Clone and Build
+## 7. Set Up Git Identity and GitHub Access
 
-**Note:** Steps 7–11 and Post-Deployment use the SSH aliases `nanoclaw` and `nanoclaw-root`. If the user declined aliases in step 6, substitute `nanoclaw@IP_ADDRESS` and `root@IP_ADDRESS` respectively.
+**Note:** Steps 7–12 and Post-Deployment use the SSH aliases `nanoclaw` and `nanoclaw-root`. If the user declined aliases in step 6, substitute `nanoclaw@IP_ADDRESS` and `root@IP_ADDRESS` respectively.
+
+The remote server needs to push to GitHub (to commit local changes before pulling updates). We use a **deploy key** — an SSH key scoped to this repository only.
+
+### 7a. Detect the repository URL
+
+On the **local** machine, detect the repo's origin URL:
 
 ```bash
-ssh nanoclaw 'git clone REPO_URL ~/nanoclaw && cd ~/nanoclaw && npm install && npm run build'
+git remote get-url origin
 ```
+
+If the URL is HTTPS format (e.g. `https://github.com/user/repo.git`), convert it to SSH format: `git@github.com:user/repo.git`. Store the SSH-format URL for use in step 8.
+
+### 7b. Generate SSH keypair on the remote
+
+```bash
+ssh nanoclaw 'ssh-keygen -t ed25519 -C "nanoclaw-server" -f ~/.ssh/id_ed25519 -N ""'
+```
+
+Display the public key:
+
+```bash
+ssh nanoclaw 'cat ~/.ssh/id_ed25519.pub'
+```
+
+### 7c. Add deploy key to GitHub
+
+Guide the user:
+
+1. Go to the repository on GitHub → **Settings** → **Deploy keys** → **Add deploy key**
+2. Title: `nanoclaw-server` (or the server's hostname)
+3. Paste the public key from 7b
+4. **Check "Allow write access"** — this is required so the server can push local changes
+5. Click **Add key**
+
+AskUserQuestion: Let me know when you've added the deploy key on GitHub. (Options: Done / I need help finding the settings page)
+
+**If they need help:** The URL is `https://github.com/OWNER/REPO/settings/keys` — substitute the owner and repo name from the origin URL detected in 7a.
+
+### 7d. Test GitHub SSH connectivity
+
+```bash
+ssh nanoclaw 'ssh -T git@github.com -o StrictHostKeyChecking=accept-new'
+```
+
+This should print "Hi OWNER/REPO! You've successfully authenticated..." (deploy keys show the repo name, not a username). If it fails, verify the key was added correctly in GitHub.
+
+### 7e. Set git identity
+
+Configure a distinct server identity so commits made on the remote are clearly distinguishable from the user's local commits:
+
+```bash
+ssh nanoclaw 'git config --global user.name "NanoClaw Server" && git config --global user.email "nanoclaw@server"'
+```
+
+## 8. Clone and Build
+
+```bash
+ssh nanoclaw 'git clone SSH_REPO_URL ~/nanoclaw && cd ~/nanoclaw && npm install && npm run build'
+```
+
+Replace `SSH_REPO_URL` with the SSH-format URL detected in step 7a (e.g. `git@github.com:user/nanoclaw.git`).
 
 If `npm install` fails on `better-sqlite3` with "not found: make", the build tools from step 4d are missing. Install them via `ssh nanoclaw-root 'apt-get install -y build-essential python3'` and retry.
 
-## 8. Build Docker Image
+## 9. Build Agent Container
 
 ```bash
 ssh nanoclaw 'cd ~/nanoclaw && ./container/build.sh'
@@ -210,7 +268,7 @@ This takes 2-5 minutes. Verify:
 ssh nanoclaw 'docker run --rm --entrypoint /bin/echo nanoclaw-agent:latest "OK"'
 ```
 
-## 9. Install Claude Code
+## 10. Install Claude Code
 
 Check the official installation docs at https://code.claude.com/docs/en/setup using WebFetch to find the current recommended installation method for Linux. Follow those instructions on the server (run commands as the `nanoclaw` user via `ssh nanoclaw '...'`, using `ssh nanoclaw-root` if root is needed).
 
@@ -226,7 +284,7 @@ Verify:
 ssh nanoclaw 'source ~/.profile && claude --version'
 ```
 
-## 10. Run Setup on the Server
+## 11. Run Setup on the Server
 
 Tell the user to SSH into the server and run `/setup` interactively:
 
@@ -247,7 +305,7 @@ Then type `/setup` inside Claude Code. This handles:
 - Claude authentication: run `claude` and follow the `/login` prompts. If the OAuth URL fails with scope errors, try copy-pasting carefully — formatting issues during copy/paste are a common cause.
 - The `.env` file (`~/nanoclaw/.env`) needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` for the agent containers. This is separate from Claude Code's own authentication.
 
-## 11. Verify Deployment
+## 12. Verify Deployment
 
 After `/setup` completes, verify everything:
 

@@ -87,6 +87,22 @@ if [ "$ASSISTANT_NAME" != "Andy" ]; then
   NAME_UPDATED="true"
 fi
 
+# Persist ASSISTANT_NAME to .env (always, even if "Andy" — makes it explicit)
+ENV_FILE="$PROJECT_ROOT/.env"
+if [ -f "$ENV_FILE" ] && grep -q '^ASSISTANT_NAME=' "$ENV_FILE"; then
+  # Update existing line
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "s/^ASSISTANT_NAME=.*/ASSISTANT_NAME=$ASSISTANT_NAME/" "$ENV_FILE"
+  else
+    sed -i "s/^ASSISTANT_NAME=.*/ASSISTANT_NAME=$ASSISTANT_NAME/" "$ENV_FILE"
+  fi
+  log "Updated ASSISTANT_NAME in .env"
+else
+  # Append (create file if needed)
+  echo "ASSISTANT_NAME=$ASSISTANT_NAME" >> "$ENV_FILE"
+  log "Added ASSISTANT_NAME to .env"
+fi
+
 cat <<EOF
 === NANOCLAW SETUP: REGISTER_CHANNEL ===
 JID: $JID
