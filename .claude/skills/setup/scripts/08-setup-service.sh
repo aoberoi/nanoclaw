@@ -167,6 +167,13 @@ UNITEOF
       log "Service not active"
     fi
 
+    # Check lingering — required for the service to survive reboots and SSH disconnects
+    LINGER_ENABLED="true"
+    if ! loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
+      LINGER_ENABLED="false"
+      log "WARNING: Lingering not enabled for $USER"
+    fi
+
     cat <<EOF
 === NANOCLAW SETUP: SETUP_SERVICE ===
 SERVICE_TYPE: systemd
@@ -174,6 +181,7 @@ NODE_PATH: $NODE_PATH
 PROJECT_PATH: $PROJECT_PATH
 UNIT_PATH: $UNIT_PATH
 SERVICE_LOADED: $SERVICE_LOADED
+LINGER_ENABLED: $LINGER_ENABLED
 STATUS: success
 LOG: logs/setup.log
 === END ===
