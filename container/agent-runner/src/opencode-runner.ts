@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { createOpencode } from '@opencode-ai/sdk';
 
-export interface ContainerInput {
+interface ContainerInput {
   prompt: string;
   sessionId?: string;
   groupFolder: string;
@@ -16,7 +16,6 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  modelProvider?: { baseUrl?: string; apiKey?: string; model?: string };
   runtime?: string;
   opencodeConfig?: {
     provider?: string;
@@ -192,12 +191,15 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
     const sessionId = sessionResult.data!.id;
     log(`Session created: ${sessionId}`);
 
-    // Set up SSE event stream for real-time updates
+    // Set up SSE event stream.
+    // session.prompt() is a blocking HTTP call that returns the full response in response.data.parts.
+    // The SSE stream runs concurrently and populates lastAssistantText as a fallback in case
+    // response.data.parts is empty. Each message.part.updated event carries the full accumulated
+    // text in part.text (not a delta), so we overwrite rather than append.
     const eventResult = await client.event.subscribe();
     const eventStream = eventResult.stream;
     let lastAssistantText = '';
 
-    // Process events in background
     const eventProcessor = (async () => {
       try {
         for await (const event of eventStream) {
@@ -238,7 +240,9 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
           },
         });
 
-        // Extract result from response
+        // Primary: extract text from response body parts.
+        // Fallback: use lastAssistantText captured from SSE events (populated concurrently
+        // during the blocking session.prompt() call).
         let result: string | null = null;
         if (response.data?.parts) {
           result = extractText(response.data.parts as Array<{ type: string; text?: string }>) || null;
@@ -270,9 +274,6 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
         log('Close sentinel received after query, exiting');
         break;
       }
-
-      // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
       // Wait for next IPC message or close
       log('Waiting for next IPC message...');

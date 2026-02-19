@@ -1,23 +1,23 @@
 ---
 name: add-model-provider
-description: Add per-group model/provider configuration to NanoClaw. Routes agent requests through OpenRouter (or any OpenAI-compatible proxy) to use cheaper models like Kimi K2.5, GLM-5, DeepSeek V3.2, or Qwen 3 Coder.
+description: Add per-group model/provider configuration to NanoClaw. Routes agent requests through OpenRouter (or any OpenAI-compatible proxy) to switch between Anthropic models or consolidate billing.
 ---
 
 # Add Model Provider
 
-This skill adds per-group model/provider configuration by leveraging `ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` env vars to route Claude Agent SDK requests through OpenRouter (or any compatible proxy) to cheaper models.
+> **Important Limitation**: This skill only works for **Anthropic models** (e.g., Claude Sonnet, Claude Haiku). The Claude Agent SDK speaks the Anthropic Messages API protocol exclusively. Non-Anthropic models (Kimi K2.5, DeepSeek, Qwen, GLM, etc.) will not work through this path — use `/add-opencode-runtime` instead for those.
+
+This skill adds per-group model/provider configuration by leveraging `ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` env vars to route Claude Agent SDK requests through OpenRouter (or any compatible Anthropic-protocol proxy).
 
 **UX Note:** When asking the user questions, prefer using the `AskUserQuestion` tool instead of just outputting text.
 
 ## Cost Context
 
-| Model | Input/Output per 1M tokens | SWE-bench | Available On |
-|-------|---------------------------|-----------|--------------|
-| Claude Opus 4 | $15 / $75 | ~80% | Anthropic (current) |
-| Kimi K2.5 | $0.50 / $2.80 | ~77% | OpenRouter, Fireworks, Together AI |
-| GLM-5 (MIT license) | $1 / $3.20 | ~78% | OpenRouter (US/EU infra) |
-| DeepSeek V3.2 | $0.25 / $0.38 | ~68% | OpenRouter |
-| Qwen 3 Coder | Free (rate-limited) | Competitive | OpenRouter |
+| Model | Input/Output per 1M tokens | Notes |
+|-------|---------------------------|-------|
+| Claude Opus 4 | $15 / $75 | Highest capability |
+| Claude Sonnet 4.5 | $3 / $15 | Best value for most tasks |
+| Claude Haiku 4.5 | $0.80 / $4 | Fast and cheap for simple tasks |
 
 Groups without `modelProvider` configured continue using default Anthropic — zero changes to existing behavior.
 
@@ -27,16 +27,16 @@ Groups without `modelProvider` configured continue using default Anthropic — z
 
 **Use AskUserQuestion** to present provider choice:
 
-Question: "Which model provider would you like to use?"
+Question: "Which Anthropic-compatible provider would you like to use?"
 Options:
-1. **OpenRouter (Recommended)** — Access to 200+ models via single API key. Get a key at https://openrouter.ai/keys
-2. **Custom endpoint** — Any OpenAI-compatible API endpoint (e.g., self-hosted, Fireworks, Together AI)
+1. **OpenRouter (Recommended)** — Route Anthropic model traffic through OpenRouter for consolidated billing. Get a key at https://openrouter.ai/keys
+2. **Custom endpoint** — Any Anthropic-protocol-compatible API endpoint (e.g., self-hosted proxy, observability layer)
 
 Wait for the user's choice before continuing.
 
 Then ask for:
 - API key (will be stored securely in `.env`)
-- Which model to default to (suggest Kimi K2.5 `moonshotai/kimi-k2.5` as best value)
+- Which Claude model to use per group (suggest `claude-sonnet-4-5` as best value)
 - Apply to all groups or specific groups?
 
 ---
@@ -54,7 +54,7 @@ export interface ContainerConfig {
   modelProvider?: {
     baseUrl?: string;    // e.g. "https://openrouter.ai/api/v1"
     apiKey?: string;     // Env var NAME to read from .env (e.g. "OPENROUTER_API_KEY")
-    model?: string;      // e.g. "moonshotai/kimi-k2.5"
+    model?: string;      // e.g. "anthropic/claude-sonnet-4-5"
   };
 }
 ```
@@ -77,11 +77,15 @@ function readSecrets(group?: RegisteredGroup): Record<string, string> {
 }
 ```
 
-**2b.** Update the stdin writing section (~line 258) to pass `modelProvider`:
+**2b.** Update the stdin writing section to pass `modelProvider` and clean it up after:
 
 Before `container.stdin.write(JSON.stringify(input))`, add:
 ```typescript
 input.modelProvider = group.containerConfig?.modelProvider;
+```
+After `container.stdin.end()`, add:
+```typescript
+delete input.modelProvider;
 ```
 
 **2c.** Update the `ContainerInput` interface to include `modelProvider`:
@@ -157,13 +161,13 @@ OPENROUTER_API_KEY=sk-or-v1-xxxxx
 
 Read `data/db.sqlite` group registrations using the existing SQLite database. For each group the user wants to configure, update the `containerConfig` JSON in the groups table.
 
-Example for OpenRouter + Kimi K2.5:
+Example for OpenRouter + Claude Sonnet 4.5:
 ```json
 {
   "modelProvider": {
     "baseUrl": "https://openrouter.ai/api/v1",
     "apiKey": "OPENROUTER_API_KEY",
-    "model": "moonshotai/kimi-k2.5"
+    "model": "anthropic/claude-sonnet-4-5"
   }
 }
 ```
@@ -190,3 +194,9 @@ Tell the user:
 ## Rollback
 
 To revert a group to default Anthropic, remove the `modelProvider` from its `containerConfig`. No code changes needed.
+
+---
+
+## For Non-Anthropic Models
+
+If you want to use Kimi K2.5, DeepSeek V3.2, GLM-5, Qwen 3 Coder, or any other non-Anthropic model, use `/add-opencode-runtime` instead. It supports any provider via OpenCode's native integrations, including a free tier (OpenCode Zen) for Kimi K2.5.

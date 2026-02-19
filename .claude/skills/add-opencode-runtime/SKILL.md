@@ -13,32 +13,17 @@ This skill adds OpenCode as an alternative agent runtime alongside Claude Code, 
 
 | Concern | Resolution |
 |---------|-----------|
-| Session continuity | OpenCode server mode maintains sessions; SDK supports `session.chat()` for follow-ups |
+| Session continuity | OpenCode server mode maintains sessions; SDK supports `session.prompt()` for follow-ups |
 | CLAUDE.md support | OpenCode natively reads CLAUDE.md files (falls back from AGENTS.md) |
 | MCP servers | Native MCP support — nanoclaw MCP server configured in opencode.json |
 | Skills/instructions | OpenCode `instructions` config loads additional instruction files |
-| Streaming | SSE endpoint provides real-time events via `client.event.list()` |
-
----
-
-## Prerequisites
-
-**Use AskUserQuestion** to ask:
-
-1. **Which model provider?**
-   - OpenRouter (Recommended) — single API key for 200+ models
-   - Anthropic — use existing Anthropic API key with OpenCode runtime
-   - Custom — any OpenAI-compatible endpoint
-
-2. **API key** — if using OpenRouter or custom (stored in `.env`)
-
-3. **Which groups to apply to?** — all groups or specific groups
-
-4. **Default runtime?** — set OpenCode as default for new groups, or per-group only
+| Streaming | SSE endpoint provides real-time events via `client.event.subscribe()` |
 
 ---
 
 ## Implementation
+
+The implementation steps add OpenCode runtime support to the codebase. They are provider/model agnostic — group configuration happens after.
 
 ### Step 1: Update Types
 
@@ -48,12 +33,11 @@ Read `src/types.ts` and extend `ContainerConfig`:
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number;
-  modelProvider?: ModelProvider;           // Phase 1 (may already exist)
-  runtime?: 'claude' | 'opencode';        // NEW - default: 'claude'
-  opencodeConfig?: {                       // NEW
-    provider?: string;     // e.g. 'openrouter', 'anthropic'
-    apiKey?: string;       // Env var NAME (e.g. "OPENROUTER_API_KEY")
-    model?: string;        // e.g. 'openrouter/moonshotai/kimi-k2.5'
+  runtime?: 'claude' | 'opencode';        // default: 'claude'
+  opencodeConfig?: {
+    provider?: string;     // e.g. 'opencode', 'openrouter', 'anthropic'
+    apiKey?: string;       // Env var NAME (e.g. "OPENROUTER_API_KEY"); omit for free-tier providers
+    model?: string;        // e.g. 'opencode/kimi-k2.5-free', 'openrouter/moonshotai/kimi-k2.5'
   };
 }
 ```
@@ -84,8 +68,8 @@ Create `container/agent-runner/src/opencode-runner.ts` with the following implem
 This file:
 1. Starts an OpenCode server via `createOpencode` SDK
 2. Writes `opencode.json` to the workspace with provider/model/MCP/permissions config
-3. Creates a session, sends the prompt via `client.session.chat()`
-4. Streams responses via `client.event.list()` SSE
+3. Creates a session, sends the prompt via `client.session.prompt()`
+4. Captures streaming text via `client.event.subscribe()` SSE as a fallback
 5. Emits OUTPUT_START/END markers to stdout (same protocol as Claude runner)
 6. Handles IPC follow-up messages by sending to the same session
 7. Handles `_close` sentinel for graceful shutdown
@@ -101,7 +85,6 @@ import fs from 'fs';
 import path from 'path';
 import { createOpencode } from '@opencode-ai/sdk';
 
-// Re-use types/constants from index.ts
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -110,7 +93,6 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  modelProvider?: { baseUrl?: string; apiKey?: string; model?: string };
   runtime?: string;
   opencodeConfig?: {
     provider?: string;
@@ -204,12 +186,12 @@ function writeOpencodeConfig(containerInput: ContainerInput): void {
   const provider = oc?.provider || 'anthropic';
   const model = oc?.model || 'anthropic/claude-sonnet-4-20250514';
 
-  // Resolve API key from secrets
+  // Resolve API key from secrets (only if explicitly configured; omit for free-tier providers)
   const apiKey = oc?.apiKey && containerInput.secrets?.[oc.apiKey]
     ? containerInput.secrets[oc.apiKey]
-    : containerInput.secrets?.['ANTHROPIC_API_KEY'] || '';
+    : undefined;
 
-  // Build the MCP server path (same as Claude runner uses)
+  // MCP server path (compiled dist location at container runtime)
   const mcpServerPath = '/tmp/dist/ipc-mcp-stdio.js';
 
   const config: Record<string, unknown> = {
@@ -236,7 +218,6 @@ function writeOpencodeConfig(containerInput: ContainerInput): void {
         },
       },
     },
-    // Load CLAUDE.md and any additional instruction files
     instructions: ['CLAUDE.md'],
   };
 
@@ -246,7 +227,7 @@ function writeOpencodeConfig(containerInput: ContainerInput): void {
 }
 
 /**
- * Extract text from assistant message parts.
+ * Extract text from message parts.
  */
 function extractText(parts: Array<{ type: string; text?: string }>): string {
   return parts
@@ -261,9 +242,11 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
   // Write opencode.json configuration
   writeOpencodeConfig(containerInput);
 
+  // Set project directory for OpenCode server
+  process.env.OPENCODE_PROJECT = '/workspace/group';
+
   // Start OpenCode server and get client
   const { client, server } = await createOpencode({
-    cwd: '/workspace/group',
     hostname: '127.0.0.1',
     port: 4096,
     config: {
@@ -275,23 +258,32 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
 
   try {
     // Create a session
-    const session = await client.session.create();
-    const sessionId = session.id;
+    const sessionResult = await client.session.create({
+      body: { title: `nanoclaw-${containerInput.groupFolder}` },
+    });
+    if (sessionResult.error) {
+      throw new Error(`Failed to create session: ${JSON.stringify(sessionResult.error)}`);
+    }
+    const sessionId = sessionResult.data!.id;
     log(`Session created: ${sessionId}`);
 
-    // Set up SSE event stream for real-time updates
-    const eventStream = await client.event.list();
+    // Set up SSE event stream.
+    // session.prompt() is a blocking HTTP call that returns the full response in response.data.parts.
+    // The SSE stream runs concurrently and populates lastAssistantText as a fallback in case
+    // response.data.parts is empty. Each message.part.updated event carries the full accumulated
+    // text in part.text (not a delta), so we overwrite rather than append.
+    const eventResult = await client.event.subscribe();
+    const eventStream = eventResult.stream;
     let lastAssistantText = '';
 
-    // Process events in background
     const eventProcessor = (async () => {
       try {
         for await (const event of eventStream) {
-          if (event.type === 'message.updated') {
-            // Capture assistant text as it streams in
-            const info = (event as { properties?: { info?: { parts?: Array<{ type: string; text?: string }> } } }).properties?.info;
-            if (info?.parts) {
-              lastAssistantText = extractText(info.parts);
+          const evt = event as { type?: string; properties?: Record<string, unknown> };
+          if (evt.type === 'message.part.updated') {
+            const part = (evt.properties?.part) as { type: string; text?: string } | undefined;
+            if (part?.type === 'text' && part.text) {
+              lastAssistantText = part.text;
             }
           }
         }
@@ -307,23 +299,33 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
     }
     const pending = drainIpcInput();
     if (pending.length > 0) {
+      log(`Draining ${pending.length} pending IPC messages into initial prompt`);
       prompt += '\n' + pending.join('\n');
     }
 
-    // Query loop
+    // Query loop: send prompt → wait for IPC → repeat
     while (true) {
       log(`Sending prompt (${prompt.length} chars)...`);
       lastAssistantText = '';
 
       try {
-        const response = await client.session.chat(sessionId, {
-          parts: [{ type: 'text', text: prompt }],
+        const response = await client.session.prompt({
+          path: { id: sessionId },
+          body: {
+            parts: [{ type: 'text' as const, text: prompt }],
+          },
         });
 
-        // Extract result from response
-        const result = response?.parts
-          ? extractText(response.parts)
-          : lastAssistantText || null;
+        // Primary: extract text from response body parts.
+        // Fallback: use lastAssistantText captured from SSE events (populated concurrently
+        // during the blocking session.prompt() call).
+        let result: string | null = null;
+        if (response.data?.parts) {
+          result = extractText(response.data.parts as Array<{ type: string; text?: string }>) || null;
+        }
+        if (!result && lastAssistantText) {
+          result = lastAssistantText;
+        }
 
         log(`Got response: ${result ? result.slice(0, 200) : '(empty)'}...`);
 
@@ -357,11 +359,12 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
         break;
       }
 
+      log(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = nextMessage;
     }
 
-    // Clean up
-    eventStream.controller.abort();
+    // Clean up — signal the async generator to stop
+    await eventStream.return(undefined as never).catch(() => {});
     await eventProcessor.catch(() => {});
   } finally {
     server.close();
@@ -372,12 +375,14 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
 
 **IMPORTANT IMPLEMENTATION NOTES:**
 
-- The `createOpencode` function from `@opencode-ai/sdk` starts both the server and returns a connected client in one call.
-- The `client.session.chat()` method sends a message and waits for the complete response.
-- SSE events via `client.event.list()` provide real-time streaming updates.
-- The opencode.json file is written to `/workspace/group/` which is the cwd.
-- IPC handling (poll/drain/close) uses the exact same mechanism as the Claude runner.
-- The OUTPUT_START/END marker protocol is identical, so the host container-runner doesn't need any changes to output parsing.
+See [`opencode-sdk-reference.md`](./opencode-sdk-reference.md) in this skill folder for full SDK interface documentation. Key points:
+
+- `createOpencode` starts both the OpenCode server and returns a connected client. Set `process.env.OPENCODE_PROJECT` before calling it to point OpenCode at the workspace directory. Do not pass `cwd` — it is not a supported option.
+- `client.session.create({body: {title}})` returns `{data, error}` — check `.error` and use `.data!.id`.
+- `client.session.prompt()` is a **blocking HTTP call** (`POST /session/{id}/message`) that waits for the full LLM response and returns `{ info, parts }` in `response.data`. Do not confuse it with `session.promptAsync()`, which is fire-and-forget and returns void.
+- `client.event.subscribe()` returns `{ stream: AsyncGenerator<Event> }`. Each `message.part.updated` event carries `{ part: { type, text }, delta? }` where `part.text` is the **full accumulated text** so far (not a delta). Use `stream.return()` to clean up.
+- The SSE stream runs concurrently during `await session.prompt()` via Node.js's event loop, so `lastAssistantText` is populated by the time `session.prompt()` resolves.
+- For free-tier providers (e.g. OpenCode Zen), do not set `apiKey` in the config — omit the field entirely. See the reference doc for provider config examples.
 
 ### Step 5: Add Runtime Dispatch
 
@@ -429,10 +434,13 @@ if (opencodeApiKey && !keys.includes(opencodeApiKey)) {
 }
 ```
 
-**6c.** Before writing stdin, pass runtime config:
+**6c.** Before writing stdin, pass runtime config; clean up after:
 ```typescript
 input.runtime = group.containerConfig?.runtime;
 input.opencodeConfig = group.containerConfig?.opencodeConfig;
+container.stdin.write(JSON.stringify(input));
+container.stdin.end();
+delete input.opencodeConfig;
 ```
 
 ### Step 7: Rebuild Container
@@ -446,42 +454,58 @@ Verify OpenCode is installed:
 docker run --rm --entrypoint opencode nanoclaw-agent:latest --version
 ```
 
-### Step 8: Configure Group(s)
-
-Update the group's `containerConfig` in the database. Example for OpenRouter + Kimi K2.5:
-
-```json
-{
-  "runtime": "opencode",
-  "opencodeConfig": {
-    "provider": "openrouter",
-    "apiKey": "OPENROUTER_API_KEY",
-    "model": "openrouter/moonshotai/kimi-k2.5"
-  }
-}
-```
-
-### Step 9: Build Host Code
+### Step 8: Build Host Code
 
 ```bash
 npm run build
 ```
 
-### Step 10: Test
+---
 
-Tell the user:
+## Group Configuration
 
-> OpenCode runtime configured! Send a message to the configured group to test.
->
-> - Groups with `runtime: 'opencode'` will use OpenCode with the configured model
-> - Groups without `runtime` set (or `runtime: 'claude'`) continue using Claude Code
-> - Both runtimes share the same IPC protocol, so MCP tools, messaging, and scheduling all work identically
+After implementing, **use AskUserQuestion** to ask:
+
+> The OpenCode runtime is now available. Would you like to configure a group to use it now?
+
+If yes, gather:
+
+1. **Which group?** — read `src/db.ts` to understand the schema, then list registered groups from `data/db.sqlite` via sqlite3 CLI
+2. **Which provider?**
+   - OpenCode Zen (Recommended) — free Kimi K2.5, no API key needed
+   - OpenRouter — single key for 200+ models
+   - Anthropic — use existing Anthropic API key
+   - Custom — any OpenAI-compatible endpoint
+3. **API key** — if using OpenRouter or custom; look up the env var name from `.env`; add the key if it doesn't exist yet
+4. **Which model?** — suggest `opencode/kimi-k2.5-free` for Zen, `openrouter/moonshotai/kimi-k2.5` for OpenRouter
+
+Then update the group's `containerConfig` in the database via sqlite3 CLI. Example:
+
+```bash
+# OpenCode Zen (free, no API key)
+sqlite3 data/db.sqlite "UPDATE groups SET container_config = json_patch(COALESCE(container_config, '{}'), '{\"runtime\":\"opencode\",\"opencodeConfig\":{\"provider\":\"opencode\",\"model\":\"opencode/kimi-k2.5-free\"}}') WHERE folder = 'your-group-folder';"
+
+# OpenRouter
+sqlite3 data/db.sqlite "UPDATE groups SET container_config = json_patch(COALESCE(container_config, '{}'), '{\"runtime\":\"opencode\",\"opencodeConfig\":{\"provider\":\"openrouter\",\"apiKey\":\"OPENROUTER_API_KEY\",\"model\":\"openrouter/moonshotai/kimi-k2.5\"}}') WHERE folder = 'your-group-folder';"
+```
+
+After configuring, ask:
+
+> Would you like the sqlite3 commands to configure this on a remote server later?
+
+If yes, emit the exact sqlite3 command(s) they would need to run on the server.
 
 ---
 
 ## Rollback
 
-To revert a group to Claude Code, remove `runtime` and `opencodeConfig` from its `containerConfig`. No code changes needed — the default runtime is `'claude'`.
+To revert a group to Claude Code, remove `runtime` and `opencodeConfig` from its `containerConfig`:
+
+```bash
+sqlite3 data/db.sqlite "UPDATE groups SET container_config = json_remove(json_remove(COALESCE(container_config, '{}'), '$.runtime'), '$.opencodeConfig') WHERE folder = 'your-group-folder';"
+```
+
+No code changes needed — the default runtime is `'claude'`.
 
 ## Compatibility Notes
 

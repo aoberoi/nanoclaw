@@ -42,11 +42,6 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  modelProvider?: {
-    baseUrl?: string;
-    apiKey?: string;
-    model?: string;
-  };
   runtime?: 'claude' | 'opencode';
   opencodeConfig?: {
     provider?: string;
@@ -196,11 +191,6 @@ function buildVolumeMounts(
  */
 function readSecrets(group?: RegisteredGroup): Record<string, string> {
   const keys = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-  // If group has a custom provider API key, read that too
-  const customApiKey = group?.containerConfig?.modelProvider?.apiKey;
-  if (customApiKey && !keys.includes(customApiKey)) {
-    keys.push(customApiKey);
-  }
   // If group uses OpenCode runtime with a custom API key, read that too
   const opencodeApiKey = group?.containerConfig?.opencodeConfig?.apiKey;
   if (opencodeApiKey && !keys.includes(opencodeApiKey)) {
@@ -278,16 +268,13 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(group);
-    // Pass model provider config so agent-runner can inject env overrides
-    input.modelProvider = group.containerConfig?.modelProvider;
     // Pass runtime selection and OpenCode config
     input.runtime = group.containerConfig?.runtime;
     input.opencodeConfig = group.containerConfig?.opencodeConfig;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-    // Remove secrets and provider config from input so they don't appear in logs
+    // Remove secrets and runtime config from input so they don't appear in logs
     delete input.secrets;
-    delete input.modelProvider;
     delete input.opencodeConfig;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive

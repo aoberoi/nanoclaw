@@ -27,16 +27,9 @@ export interface AllowedRoot {
   description?: string;
 }
 
-export interface ModelProvider {
-  baseUrl?: string;    // e.g. "https://openrouter.ai/api/v1"
-  apiKey?: string;     // Env var NAME to read from .env (e.g. "OPENROUTER_API_KEY")
-  model?: string;      // e.g. "moonshotai/kimi-k2.5"
-}
-
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
-  modelProvider?: ModelProvider;
   runtime?: 'claude' | 'opencode';   // Default: 'claude'
   opencodeConfig?: {
     provider?: string;     // e.g. 'openrouter', 'anthropic'

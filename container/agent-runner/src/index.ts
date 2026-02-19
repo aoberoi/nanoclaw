@@ -27,11 +27,6 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  modelProvider?: {
-    baseUrl?: string;
-    apiKey?: string;
-    model?: string;
-  };
   runtime?: 'claude' | 'opencode';
   opencodeConfig?: {
     provider?: string;
@@ -531,21 +526,6 @@ async function main(): Promise<void> {
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     sdkEnv[key] = value;
-  }
-
-  // Inject model provider overrides (OpenRouter, custom endpoints, etc.)
-  if (containerInput.modelProvider) {
-    const mp = containerInput.modelProvider;
-    if (mp.baseUrl) {
-      sdkEnv.ANTHROPIC_BASE_URL = mp.baseUrl;
-    }
-    if (mp.apiKey && containerInput.secrets?.[mp.apiKey]) {
-      sdkEnv.ANTHROPIC_API_KEY = containerInput.secrets[mp.apiKey];
-    }
-    if (mp.model) {
-      sdkEnv.ANTHROPIC_MODEL = mp.model;
-    }
-    log(`Model provider configured: base=${mp.baseUrl || 'default'} model=${mp.model || 'default'}`);
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
