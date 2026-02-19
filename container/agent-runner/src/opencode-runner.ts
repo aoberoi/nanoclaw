@@ -153,8 +153,14 @@ function writeOpencodeConfig(containerInput: ContainerInput): void {
         },
       },
     },
-    // Load CLAUDE.md and any additional instruction files
-    instructions: ['CLAUDE.md'],
+    // Load CLAUDE.md and any additional instruction files.
+    // Non-main groups also get the global CLAUDE.md (matches Claude runtime behaviour).
+    instructions: [
+      'CLAUDE.md',
+      ...(!containerInput.isMain && fs.existsSync('/workspace/global/CLAUDE.md')
+        ? ['/workspace/global/CLAUDE.md']
+        : []),
+    ],
   };
 
   const configPath = '/workspace/group/opencode.json';

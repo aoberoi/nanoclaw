@@ -44,11 +44,23 @@ export interface ContainerConfig {
 
 ### Step 2: Update Dockerfile
 
-Read `container/Dockerfile` and add OpenCode installation after the claude-code line:
+Read `container/Dockerfile` and make two changes:
+
+**2a.** Add OpenCode to the global npm install line:
 
 ```dockerfile
 # Install agent-browser, claude-code, and opencode globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code opencode-ai
+```
+
+**2b.** In the `RUN printf ...` entrypoint block, change the final `node` invocation to run from `/workspace/group` instead of the compilation directory (`/app`). This ensures the process cwd is the group workspace, so OpenCode can discover `opencode.json` and `CLAUDE.md` via cwd (the Claude runtime is unaffected — it passes `cwd` explicitly to the SDK):
+
+```
+# Before (last line of the printf):
+node /tmp/dist/index.js < /tmp/input.json
+
+# After:
+cd /workspace/group && node /tmp/dist/index.js < /tmp/input.json
 ```
 
 ### Step 3: Add SDK Dependency
@@ -230,7 +242,13 @@ function writeOpencodeConfig(containerInput: ContainerInput): void {
         },
       },
     },
-    instructions: ['CLAUDE.md'],
+    // Non-main groups also get the global CLAUDE.md (matches Claude runtime behaviour).
+    instructions: [
+      'CLAUDE.md',
+      ...(!containerInput.isMain && fs.existsSync('/workspace/global/CLAUDE.md')
+        ? ['/workspace/global/CLAUDE.md']
+        : []),
+    ],
   };
 
   const configPath = '/workspace/group/opencode.json';
