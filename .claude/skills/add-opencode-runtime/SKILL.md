@@ -113,6 +113,18 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+// Per-prompt timeout. If the model API stalls, session.prompt() blocks
+// indefinitely — the Claude runner is unaffected because the Agent SDK manages
+// its own timeouts internally. On timeout the container exits so the host queue
+// can spawn a fresh one. (CONTAINER_TIMEOUT is host-side and not available here.)
+const PROMPT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+class PromptTimeoutError extends Error {
+  constructor() {
+    super(`session.prompt() timed out after ${PROMPT_TIMEOUT_MS / 1000}s`);
+    this.name = 'PromptTimeoutError';
+  }
+}
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -309,12 +321,18 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
       lastAssistantText = '';
 
       try {
-        const response = await client.session.prompt({
-          path: { id: sessionId },
-          body: {
-            parts: [{ type: 'text' as const, text: prompt }],
-          },
-        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new PromptTimeoutError()), PROMPT_TIMEOUT_MS),
+        );
+        const response = await Promise.race([
+          client.session.prompt({
+            path: { id: sessionId },
+            body: {
+              parts: [{ type: 'text' as const, text: prompt }],
+            },
+          }),
+          timeoutPromise,
+        ]);
 
         // Primary: extract text from response body parts.
         // Fallback: use lastAssistantText captured from SSE events (populated concurrently
@@ -343,6 +361,10 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
           newSessionId: sessionId,
           error: errorMessage,
         });
+        if (err instanceof PromptTimeoutError) {
+          log('Prompt timed out — exiting container so host can spawn a fresh one');
+          break;
+        }
       }
 
       // Check for close before waiting
@@ -379,7 +401,7 @@ See [`opencode-sdk-reference.md`](./opencode-sdk-reference.md) in this skill fol
 
 - `createOpencode` starts both the OpenCode server and returns a connected client. Set `process.env.OPENCODE_PROJECT` before calling it to point OpenCode at the workspace directory. Do not pass `cwd` — it is not a supported option.
 - `client.session.create({body: {title}})` returns `{data, error}` — check `.error` and use `.data!.id`.
-- `client.session.prompt()` is a **blocking HTTP call** (`POST /session/{id}/message`) that waits for the full LLM response and returns `{ info, parts }` in `response.data`. Do not confuse it with `session.promptAsync()`, which is fire-and-forget and returns void.
+- `client.session.prompt()` is a **blocking HTTP call** (`POST /session/{id}/message`) that waits for the full LLM response and returns `{ info, parts }` in `response.data`. Do not confuse it with `session.promptAsync()`, which is fire-and-forget and returns void. Wrap with `Promise.race()` and a `PromptTimeoutError` to guard against stalled API calls — on timeout, write an error output and `break` so the container exits and the host queue can spawn a fresh one.
 - `client.event.subscribe()` returns `{ stream: AsyncGenerator<Event> }`. Each `message.part.updated` event carries `{ part: { type, text }, delta? }` where `part.text` is the **full accumulated text** so far (not a delta). Use `stream.return()` to clean up.
 - The SSE stream runs concurrently during `await session.prompt()` via Node.js's event loop, so `lastAssistantText` is populated by the time `session.prompt()` resolves.
 - For free-tier providers (e.g. OpenCode Zen), do not set `apiKey` in the config — omit the field entirely. See the reference doc for provider config examples.
