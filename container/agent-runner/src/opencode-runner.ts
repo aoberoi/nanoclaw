@@ -36,6 +36,18 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+// Per-prompt timeout. If the model API stalls, session.prompt() blocks
+// indefinitely — the Claude runner is unaffected because the Agent SDK manages
+// its own timeouts internally. On timeout the container exits so the host queue
+// can spawn a fresh one. (CONTAINER_TIMEOUT is host-side and not available here.)
+const PROMPT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+class PromptTimeoutError extends Error {
+  constructor() {
+    super(`session.prompt() timed out after ${PROMPT_TIMEOUT_MS / 1000}s`);
+    this.name = 'PromptTimeoutError';
+  }
+}
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -233,12 +245,18 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
       lastAssistantText = '';
 
       try {
-        const response = await client.session.prompt({
-          path: { id: sessionId },
-          body: {
-            parts: [{ type: 'text' as const, text: prompt }],
-          },
-        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new PromptTimeoutError()), PROMPT_TIMEOUT_MS),
+        );
+        const response = await Promise.race([
+          client.session.prompt({
+            path: { id: sessionId },
+            body: {
+              parts: [{ type: 'text' as const, text: prompt }],
+            },
+          }),
+          timeoutPromise,
+        ]);
 
         // Primary: extract text from response body parts.
         // Fallback: use lastAssistantText captured from SSE events (populated concurrently
@@ -267,6 +285,10 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
           newSessionId: sessionId,
           error: errorMessage,
         });
+        if (err instanceof PromptTimeoutError) {
+          log('Prompt timed out — exiting container so host can spawn a fresh one');
+          break;
+        }
       }
 
       // Check for close before waiting
