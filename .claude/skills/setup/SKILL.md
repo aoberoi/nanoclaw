@@ -11,6 +11,19 @@ Run setup scripts automatically. Only pause when user action is required (WhatsA
 
 **UX Note:** Use `AskUserQuestion` for all user-facing questions.
 
+## 0. Deployment Context
+
+Before doing anything else, ask:
+
+AskUserQuestion: Are you setting this up on a remote or cloud Linux server (e.g. a VPS, Hetzner, DigitalOcean, etc.)?
+
+**If yes:** Recommend `/deploy-to-linux` instead — it handles server provisioning, user account setup, lingering (so the service survives reboots), and runs `/setup` for you as part of the process. Ask if they'd like to switch to that skill.
+
+- If they want to switch → stop here and invoke the `/deploy-to-linux` skill.
+- If they want to continue with `/setup` directly → proceed to step 1.
+
+**If no (local machine):** Proceed directly to step 1.
+
 ## 1. Check Environment
 
 Run `./.claude/skills/setup/scripts/01-check-environment.sh` and parse the status block.
@@ -158,6 +171,8 @@ Tell user how to grant a group access: add `containerConfig.additionalMounts` to
 If the service is already running (check `launchctl list | grep nanoclaw` on macOS), unload it first: `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist` — then proceed with a clean install.
 
 Run `./.claude/skills/setup/scripts/08-setup-service.sh` and parse the status block.
+
+**If LINGER_ENABLED=false (Linux only):** Warn the user: lingering is not enabled, so the service will not start automatically at boot or survive SSH disconnects. The fix requires root: `sudo loginctl enable-linger $USER` (or `loginctl enable-linger USERNAME` as root). Note that the `/deploy-to-linux` skill handles this automatically as part of server provisioning.
 
 **If SERVICE_LOADED=false:**
 - Read `logs/setup.log` for the error.

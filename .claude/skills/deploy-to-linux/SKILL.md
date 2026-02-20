@@ -162,6 +162,19 @@ Copy SSH authorized keys so the user can SSH directly:
 ssh root@IP_ADDRESS 'mkdir -p /home/nanoclaw/.ssh && cp /root/.ssh/authorized_keys /home/nanoclaw/.ssh/authorized_keys && chown -R nanoclaw:nanoclaw /home/nanoclaw/.ssh && chmod 700 /home/nanoclaw/.ssh && chmod 600 /home/nanoclaw/.ssh/authorized_keys'
 ```
 
+Enable **lingering** so the user's systemd instance (and nanoclaw service) survives SSH disconnects and starts automatically at boot:
+
+```bash
+ssh root@IP_ADDRESS 'loginctl enable-linger nanoclaw'
+```
+
+Verify:
+
+```bash
+ssh root@IP_ADDRESS 'loginctl show-user nanoclaw | grep Linger'
+# Expected: Linger=yes
+```
+
 Verify direct SSH works:
 
 ```bash
