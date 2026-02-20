@@ -184,6 +184,10 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
   // Write opencode.json configuration
   writeOpencodeConfig(containerInput);
 
+  // Pin OpenCode's state dir to the mounted host directory for session persistence
+  const OPENCODE_STATE_DIR = '/workspace/opencode-state';
+  process.env.XDG_STATE_HOME = OPENCODE_STATE_DIR;
+
   // Set project directory for OpenCode server
   process.env.OPENCODE_PROJECT = '/workspace/group';
 
@@ -199,15 +203,29 @@ export async function runOpenCode(containerInput: ContainerInput): Promise<void>
   log('OpenCode server started');
 
   try {
-    // Create a session
-    const sessionResult = await client.session.create({
-      body: { title: `nanoclaw-${containerInput.groupFolder}` },
-    });
-    if (sessionResult.error) {
-      throw new Error(`Failed to create session: ${JSON.stringify(sessionResult.error)}`);
+    // Reuse an existing session if one was stored, otherwise create a new one
+    let sessionId: string;
+    if (containerInput.sessionId) {
+      const check = await client.session.get({ path: { id: containerInput.sessionId } });
+      if (check.error) {
+        log(`Stored session ${containerInput.sessionId} not found, creating new session`);
+        const created = await client.session.create({
+          body: { title: `nanoclaw-${containerInput.groupFolder}` },
+        });
+        if (created.error) throw new Error(`Failed to create session: ${JSON.stringify(created.error)}`);
+        sessionId = created.data!.id;
+      } else {
+        sessionId = containerInput.sessionId;
+        log(`Resuming session: ${sessionId}`);
+      }
+    } else {
+      const created = await client.session.create({
+        body: { title: `nanoclaw-${containerInput.groupFolder}` },
+      });
+      if (created.error) throw new Error(`Failed to create session: ${JSON.stringify(created.error)}`);
+      sessionId = created.data!.id;
+      log(`Session created: ${sessionId}`);
     }
-    const sessionId = sessionResult.data!.id;
-    log(`Session created: ${sessionId}`);
 
     // Set up SSE event stream.
     // session.prompt() is a blocking HTTP call that returns the full response in response.data.parts.

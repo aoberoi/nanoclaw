@@ -164,6 +164,18 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // OpenCode runtime: mount per-group state directory so sessions persist across container restarts.
+  // XDG_STATE_HOME is set to /workspace/opencode-state in opencode-runner.ts.
+  if (group.containerConfig?.runtime === 'opencode') {
+    const opencodeStateDir = path.join(DATA_DIR, 'opencode-state', group.folder);
+    fs.mkdirSync(opencodeStateDir, { recursive: true });
+    mounts.push({
+      hostPath: opencodeStateDir,
+      containerPath: '/workspace/opencode-state',
+      readonly: false,
+    });
+  }
+
   // Mount agent-runner source from host — recompiled on container startup.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
   mounts.push({
