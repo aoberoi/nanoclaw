@@ -42,6 +42,12 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  runtime?: 'claude' | 'opencode';
+  opencodeConfig?: {
+    provider?: string;
+    apiKey?: string;
+    model?: string;
+  };
 }
 
 export interface ContainerOutput {
@@ -158,6 +164,18 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // OpenCode runtime: mount per-group state directory so sessions persist across container restarts.
+  // XDG_STATE_HOME is set to /workspace/opencode-state in opencode-runner.ts.
+  if (group.containerConfig?.runtime === 'opencode') {
+    const opencodeStateDir = path.join(DATA_DIR, 'opencode-state', group.folder);
+    fs.mkdirSync(opencodeStateDir, { recursive: true });
+    mounts.push({
+      hostPath: opencodeStateDir,
+      containerPath: '/workspace/opencode-state',
+      readonly: false,
+    });
+  }
+
   // Mount agent-runner source from host — recompiled on container startup.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
   mounts.push({
@@ -183,8 +201,14 @@ function buildVolumeMounts(
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
  */
-function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+function readSecrets(group?: RegisteredGroup): Record<string, string> {
+  const keys = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+  // If group uses OpenCode runtime with a custom API key, read that too
+  const opencodeApiKey = group?.containerConfig?.opencodeConfig?.apiKey;
+  if (opencodeApiKey && !keys.includes(opencodeApiKey)) {
+    keys.push(opencodeApiKey);
+  }
+  return readEnvFile(keys);
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
@@ -255,11 +279,15 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
+    input.secrets = readSecrets(group);
+    // Pass runtime selection and OpenCode config
+    input.runtime = group.containerConfig?.runtime;
+    input.opencodeConfig = group.containerConfig?.opencodeConfig;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-    // Remove secrets from input so they don't appear in logs
+    // Remove secrets and runtime config from input so they don't appear in logs
     delete input.secrets;
+    delete input.opencodeConfig;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

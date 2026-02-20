@@ -27,6 +27,12 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  runtime?: 'claude' | 'opencode';
+  opencodeConfig?: {
+    provider?: string;
+    apiKey?: string;
+    model?: string;
+  };
 }
 
 interface ContainerOutput {
@@ -498,6 +504,14 @@ async function main(): Promise<void> {
     // Delete the temp file the entrypoint wrote — it contains secrets
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
     log(`Received input for group: ${containerInput.groupFolder}`);
+
+    // Runtime dispatch: use OpenCode if configured
+    if (containerInput.runtime === 'opencode') {
+      log('Dispatching to OpenCode runtime');
+      const { runOpenCode } = await import('./opencode-runner.js');
+      await runOpenCode(containerInput);
+      return;
+    }
   } catch (err) {
     writeOutput({
       status: 'error',
